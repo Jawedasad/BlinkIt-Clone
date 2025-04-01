@@ -4,9 +4,9 @@ import { addAddressController, deleteAddresscontroller, getAddressController, up
 
 const addressRouter = Router()
 
-addressRouter.post('/create',auth,addAddressController)
-addressRouter.get("/get",auth,getAddressController)
-addressRouter.put('/update',auth,updateAddressController)
-addressRouter.delete("/disable",auth,deleteAddresscontroller)
+addressRouter.post('/api/create',auth,addAddressController)
+addressRouter.get("/api/get",auth,getAddressController)
+addressRouter.put('/api/update',auth,updateAddressController)
+addressRouter.delete("/api/disable",auth,deleteAddresscontroller)
 
 export default addressRouter

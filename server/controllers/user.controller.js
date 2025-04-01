@@ -7,174 +7,316 @@ import genertedRefreshToken from '../utils/generatedRefreshToken.js'
 import uploadImageClodinary from '../utils/uploadImageClodinary.js'
 import generatedOtp from '../utils/generatedOtp.js'
 import forgotPasswordTemplate from '../utils/forgotPasswordTemplate.js'
-import jwt from 'jsonwebtoken'
+import jwt from 'jsonwebtoken';
+import twilio from 'twilio';
+import crypto from 'crypto';
 
-export async function registerUserController(request,response){
+const accountSid = process.env.TWILIO_ACCOUNT_SID;
+const authToken = process.env.TWILIO_AUTH_TOKEN;
+const twilioClient = twilio(accountSid, authToken);
+
+export async function requestOTPController(request, response) {
     try {
-        const { name, email , password } = request.body
+        const { mobile } = request.body;
 
-        if(!name || !email || !password){
+        if (!mobile) {
             return response.status(400).json({
-                message : "provide email, name, password",
-                error : true,
-                success : false
-            })
+                message: "Provide mobile number",
+                error: true,
+                success: false
+            });
         }
 
-        const user = await UserModel.findOne({ email })
+        const otp = generatedOtp();
+        const ttl = 5 * 60 * 1000; // 5 Minutes
+        const expires = Date.now() + ttl;
+        const data = `${mobile}.${otp}.${expires}`;
+        const hash = crypto
+            .createHmac("sha256", process.env.OTP_SECRET_KEY)
+            .update(data)
+            .digest("hex");
+        const fullHash = `${hash}.${expires}`;
 
-        if(user){
-            return response.json({
-                message : "Already register email",
-                error : true,
-                success : false
-            })
-        }
-
-        const salt = await bcryptjs.genSalt(10)
-        const hashPassword = await bcryptjs.hash(password,salt)
-
-        const payload = {
-            name,
-            email,
-            password : hashPassword
-        }
-
-        const newUser = new UserModel(payload)
-        const save = await newUser.save()
-
-        const VerifyEmailUrl = `${process.env.FRONTEND_URL}/verify-email?code=${save?._id}`
-
-        const verifyEmail = await sendEmail({
-            sendTo : email,
-            subject : "Verify email from binkeyit",
-            html : verifyEmailTemplate({
-                name,
-                url : VerifyEmailUrl
-            })
-        })
+        await twilioClient.messages.create({
+            body: `Your OTP is ${otp}. It will expire in 5 minutes.`,
+            from: process.env.TWILIO_PHONE_NUMBER,
+            to: mobile
+        });
 
         return response.json({
-            message : "User register successfully",
-            error : false,
-            success : true,
-            data : save
-        })
+            message: "OTP sent successfully",
+            error: false,
+            success: true,
+            data: {
+                hash: fullHash
+            }
+        });
 
     } catch (error) {
         return response.status(500).json({
-            message : error.message || error,
-            error : true,
-            success : false
-        })
+            message: error.message || error,
+            error: true,
+            success: false
+        });
     }
 }
 
-export async function verifyEmailController(request,response){
+export async function verifyOTPController(request, response) {
     try {
-        const { code } = request.body
+        const { mobile, otp, hash } = request.body;
 
-        const user = await UserModel.findOne({ _id : code})
-
-        if(!user){
+        if (!mobile || !otp || !hash) {
             return response.status(400).json({
-                message : "Invalid code",
-                error : true,
-                success : false
-            })
+                message: "Provide mobile number, otp and hash",
+                error: true,
+                success: false
+            });
         }
 
-        const updateUser = await UserModel.updateOne({ _id : code },{
-            verify_email : true
-        })
+        const [hashValue, expires] = hash.split('.');
+        let now = Date.now();
+        if (now > parseInt(expires)) {
+            return response.status(400).json({
+                message: "OTP expired",
+                error: true,
+                success: false
+            });
+        }
+        const data = `${mobile}.${otp}.${expires}`;
+        const newCalculatedHash = crypto
+            .createHmac("sha256", process.env.OTP_SECRET_KEY)
+            .update(data)
+            .digest("hex");
 
-        return response.json({
-            message : "Verify email done",
-            success : true,
-            error : false
-        })
+        if (newCalculatedHash === hashValue) {
+            // Verify user
+            let user = await UserModel.findOne({ mobile: mobile });
+            if (!user) {
+                return response.status(400).json({
+                    message: "Mobile number not registered",
+                    error: true,
+                    success: false
+                });
+            }
+
+            const accesstoken = await generatedAccessToken(user._id);
+            const refreshToken = await genertedRefreshToken(user._id);
+
+            const updateUser = await UserModel.findByIdAndUpdate(user?._id, {
+                last_login_date: new Date()
+            });
+
+            const cookiesOption = {
+                httpOnly: true,
+                secure: true,
+                sameSite: "None"
+            }
+            response.cookie('accessToken', accesstoken, cookiesOption)
+            response.cookie('refreshToken', refreshToken, cookiesOption)
+
+            return response.json({
+                message: "Login successfully",
+                error: false,
+                success: true,
+                data: {
+                    accesstoken,
+                    refreshToken
+                }
+            });
+        } else {
+            return response.status(400).json({
+                message: "Invalid OTP",
+                error: true,
+                success: false
+            });
+        }
+
     } catch (error) {
         return response.status(500).json({
-            message : error.message || error,
-            error : true,
-            success : true
-        })
+            message: error.message || error,
+            error: true,
+            success: false
+        });
+    }
+}
+
+export async function registerUserController(request, response) {
+    try {
+        const { name, email, password, mobile } = request.body;
+
+        if ((!name || !email || !password) && !mobile) {
+            return response.status(400).json({
+                message: "Provide email, name, password or mobile",
+                error: true,
+                success: false
+            });
+        }
+
+        if (email) {
+            const user = await UserModel.findOne({ email });
+
+            if (user) {
+                return response.json({
+                    message: "Already register email",
+                    error: true,
+                    success: false
+                });
+            }
+        }
+
+        let payload = {};
+        if (email && password) {
+            const salt = await bcryptjs.genSalt(10);
+            const hashPassword = await bcryptjs.hash(password, salt);
+
+            payload = {
+                name,
+                email,
+                password: hashPassword
+            };
+        } else if (mobile) {
+            payload = {
+                name,
+                mobile
+            };
+        }
+
+        const newUser = new UserModel(payload);
+        const save = await newUser.save();
+
+        if (email) {
+            const VerifyEmailUrl = `${process.env.FRONTEND_URL}/verify-email?code=${save?._id}`;
+
+            const verifyEmail = await sendEmail({
+                sendTo: email,
+                subject: "Verify email from binkeyit",
+                html: verifyEmailTemplate({
+                    name,
+                    url: VerifyEmailUrl
+                })
+            });
+        }
+
+        return response.json({
+            message: "User register successfully",
+            error: false,
+            success: true,
+            data: save
+        });
+
+    } catch (error) {
+        return response.status(500).json({
+            message: error.message || error,
+            error: true,
+            success: false
+        });
+    }
+}
+
+export async function verifyEmailController(request, response) {
+    try {
+        const { code } = request.body;
+
+        const user = await UserModel.findOne({ _id: code });
+
+        if (!user) {
+            return response.status(400).json({
+                message: "Invalid code",
+                error: true,
+                success: false
+            });
+        }
+
+        const updateUser = await UserModel.updateOne({ _id: code }, {
+            verify_email: true
+        });
+
+        return response.json({
+            message: "Verify email done",
+            success: true,
+            error: false
+        });
+    } catch (error) {
+        return response.status(500).json({
+            message: error.message || error,
+            error: true,
+            success: true
+        });
     }
 }
 
 //login controller
-export async function loginController(request,response){
+export async function loginController(request, response) {
     try {
-        const { email , password } = request.body
+        const { email, password } = request.body;
 
-
-        if(!email || !password){
+        if (!email || !password) {
             return response.status(400).json({
-                message : "provide email, password",
-                error : true,
-                success : false
-            })
+                message: "provide email, password",
+                error: true,
+                success: false
+            });
         }
 
-        const user = await UserModel.findOne({ email })
+        const user = await UserModel.findOne({ email });
 
-        if(!user){
+        if (!user) {
             return response.status(400).json({
-                message : "User not register",
-                error : true,
-                success : false
-            })
+                message: "User not register",
+                error: true,
+                success: false
+            });
         }
 
-        if(user.status !== "Active"){
+        if (user.status !== "Active") {
             return response.status(400).json({
-                message : "Contact to Admin",
-                error : true,
-                success : false
-            })
+                message: "Contact to Admin",
+                error: true,
+                success: false
+            });
         }
 
-        const checkPassword = await bcryptjs.compare(password,user.password)
+        const checkPassword = await bcryptjs.compare(password, user.password);
 
-        if(!checkPassword){
+        if (!checkPassword) {
             return response.status(400).json({
-                message : "Check your password",
-                error : true,
-                success : false
-            })
+                message: "Check your password",
+                error: true,
+                success: false
+            });
         }
 
-        const accesstoken = await generatedAccessToken(user._id)
-        const refreshToken = await genertedRefreshToken(user._id)
+        const accesstoken = await generatedAccessToken(user._id);
+        const refreshToken = await genertedRefreshToken(user._id);
 
-        const updateUser = await UserModel.findByIdAndUpdate(user?._id,{
-            last_login_date : new Date()
-        })
+        const updateUser = await UserModel.findByIdAndUpdate(user?._id, {
+            last_login_date: new Date()
+        });
 
         const cookiesOption = {
-            httpOnly : true,
-            secure : true,
-            sameSite : "None"
+            httpOnly: true,
+            secure: true,
+            sameSite: "None"
         }
-        response.cookie('accessToken',accesstoken,cookiesOption)
-        response.cookie('refreshToken',refreshToken,cookiesOption)
+        response.cookie('accessToken', accesstoken, cookiesOption);
+        response.cookie('refreshToken', refreshToken, cookiesOption);
 
         return response.json({
-            message : "Login successfully",
-            error : false,
-            success : true,
-            data : {
+            message: "Login successfully",
+            error: false,
+            success: true,
+            data: {
                 accesstoken,
                 refreshToken
             }
-        })
+        });
 
     } catch (error) {
         return response.status(500).json({
-            message : error.message || error,
-            error : true,
-            success : false
-        })
+            message: error.message || error,
+            error: true,
+            success: false
+        });
     }
 }
 

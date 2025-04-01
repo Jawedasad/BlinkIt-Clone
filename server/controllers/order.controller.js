@@ -1,4 +1,4 @@
-import Stripe from "../config/stripe.js";
+import razorpay from "../config/razorpay.js";
 import CartProductModel from "../models/cartproduct.model.js";
 import OrderModel from "../models/order.model.js";
 import UserModel from "../models/user.model.js";
@@ -85,7 +85,7 @@ export async function paymentController(request,response){
         const params = {
             submit_type : 'pay',
             mode : 'payment',
-            payment_method_types : ['card'],
+            payment_method_types : ['card', 'upi', 'wallet'],
             customer_email : user.email,
             metadata : {
                 userId : userId,
@@ -96,9 +96,14 @@ export async function paymentController(request,response){
             cancel_url : `${process.env.FRONTEND_URL}/cancel`
         }
 
-        const session = await Stripe.checkout.sessions.create(params)
+        const order = await razorpay.orders.create({
+            amount: totalAmt * 100,  // Amount in paise
+            currency: "INR",
+            receipt: `ORD_RCPT-${new mongoose.Types.ObjectId()}`,
+            payment_capture: 1, // Auto-capture payment
+        });
 
-        return response.status(200).json(session)
+        return response.status(200).json(order);
 
     } catch (error) {
         return response.status(500).json({
@@ -110,79 +115,49 @@ export async function paymentController(request,response){
 }
 
 
-const getOrderProductItems = async({
-    lineItems,
-    userId,
-    addressId,
-    paymentId,
-    payment_status,
- })=>{
-    const productList = []
-
-    if(lineItems?.data?.length){
-        for(const item of lineItems.data){
-            const product = await Stripe.products.retrieve(item.price.product)
-
-            const paylod = {
-                userId : userId,
-                orderId : `ORD-${new mongoose.Types.ObjectId()}`,
-                productId : product.metadata.productId, 
-                product_details : {
-                    name : product.name,
-                    image : product.images
-                } ,
-                paymentId : paymentId,
-                payment_status : payment_status,
-                delivery_address : addressId,
-                subTotalAmt  : Number(item.amount_total / 100),
-                totalAmt  :  Number(item.amount_total / 100),
-            }
-
-            productList.push(paylod)
-        }
-    }
-
-    return productList
-}
 
 //http://localhost:8080/api/order/webhook
-export async function webhookStripe(request,response){
-    const event = request.body;
-    const endPointSecret = process.env.STRIPE_ENPOINT_WEBHOOK_SECRET_KEY
+export async function webhookStripe(request, response) {
+  const crypto = require('crypto');
 
-    console.log("event",event)
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
 
+  const shasum = crypto.createHmac('sha256', secret);
+  shasum.update(JSON.stringify(request.body));
+  const digest = shasum.digest('hex');
+
+  if (digest === request.headers['x-razorpay-signature']) {
+    console.log('Request is legit!');
     // Handle the event
-  switch (event.type) {
-    case 'checkout.session.completed':
-      const session = event.data.object;
-      const lineItems = await Stripe.checkout.sessions.listLineItems(session.id)
-      const userId = session.metadata.userId
-      const orderProduct = await getOrderProductItems(
-        {
-            lineItems : lineItems,
-            userId : userId,
-            addressId : session.metadata.addressId,
-            paymentId  : session.payment_intent,
-            payment_status : session.payment_status,
-        })
-    
-      const order = await OrderModel.insertMany(orderProduct)
+    const event = request.body;
 
-        console.log(order)
-        if(Boolean(order[0])){
-            const removeCartItems = await  UserModel.findByIdAndUpdate(userId,{
-                shopping_cart : []
-            })
-            const removeCartProductDB = await CartProductModel.deleteMany({ userId : userId})
-        }
-      break;
-    default:
-      console.log(`Unhandled event type ${event.type}`);
+    switch (event.event) {
+      case 'order.paid':
+        const orderId = event.payload.order.entity.id;
+        const paymentId = event.payload.payment.entity.id;
+        const userId = event.payload.order.entity.receipt.split('-')[2]; // Assuming receipt is in the format ORD-RCPT-{userId}
+
+        // Update order status in the database
+        await OrderModel.updateMany(
+          { orderId: orderId },
+          { paymentId: paymentId, payment_status: 'PAID' }
+        );
+
+        // Clear the user's cart
+        await UserModel.findByIdAndUpdate(userId, { shopping_cart: [] });
+        await CartProductModel.deleteMany({ userId: userId });
+
+        break;
+      default:
+        console.log(`Unhandled event type ${event.event}`);
+    }
+
+    // Return a response to acknowledge receipt of the event
+    response.json({ received: true });
+  } else {
+    // Pass it down the line
+    response.status(400).json({ error: 'Invalid signature' });
   }
-
-  // Return a response to acknowledge receipt of the event
-  response.json({received: true});
 }
 
 

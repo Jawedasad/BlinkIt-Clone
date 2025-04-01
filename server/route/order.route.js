@@ -4,9 +4,9 @@ import { CashOnDeliveryOrderController, getOrderDetailsController, paymentContro
 
 const orderRouter = Router()
 
-orderRouter.post("/cash-on-delivery",auth,CashOnDeliveryOrderController)
-orderRouter.post('/checkout',auth,paymentController)
-orderRouter.post('/webhook',webhookStripe)
-orderRouter.get("/order-list",auth,getOrderDetailsController)
+orderRouter.post("/api/cash-on-delivery",auth,CashOnDeliveryOrderController)
+orderRouter.post('/api/checkout',auth,paymentController)
+orderRouter.post('/api/webhook',webhookStripe)
+orderRouter.get("/api/order-list",auth,getOrderDetailsController)
 
 export default orderRouter

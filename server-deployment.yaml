@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server-deployment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+        - name: server
+          image: YOUR_SERVER_IMAGE_NAME
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: MONGODB_URI
+              value: <your-mongodb-uri>
+            - name: RAZORPAY_KEY_ID
+              value: <your-razorpay-key-id>
+            - name: RAZORPAY_KEY_SECRET
+              value: <your-razorpay-key-secret>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server-service
+spec:
+  selector:
+    app: server
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8000
+  type: ClusterIP

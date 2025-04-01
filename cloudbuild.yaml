@@ -1,0 +1,27 @@
+steps:
+  # Build the server image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/<your-project-id>/<server-image-name>:$SHORT_SHA', '-f', 'server/Dockerfile', '.']
+  # Push the server image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/<your-project-id>/<server-image-name>:$SHORT_SHA']
+  # Build the client image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/<your-project-id>/<client-image-name>:$SHORT_SHA', '-f', 'client/Dockerfile', '.']
+  # Push the client image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/<your-project-id>/<client-image-name>:$SHORT_SHA']
+  # Deploy to GKE
+  - name: 'gcr.io/cloud-builders/kubectl'
+    args: ['apply', '-f', 'server-deployment.yaml']
+    env:
+      - name: SHORT_SHA
+        value: '$SHORT_SHA'
+  - name: 'gcr.io/cloud-builders/kubectl'
+    args: ['apply', '-f', 'client-deployment.yaml']
+    env:
+      - name: SHORT_SHA
+        value: '$SHORT_SHA'
+images:
+  - 'gcr.io/<your-project-id>/<server-image-name>:$SHORT_SHA'
+  - 'gcr.io/<your-project-id>/<client-image-name>:$SHORT_SHA'
